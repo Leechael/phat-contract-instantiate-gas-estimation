@@ -1,3 +1,5 @@
+require('dotenv').config()
+
 const fs = require('fs')
 const { inspect } = require('util')
 const { OnChainRegistry, signCertificate, signAndSend, options, PinkBlueprintPromise } = require('@phala/sdk')
@@ -25,7 +27,9 @@ async function main() {
   const cert = await signCertificate({ pair })
   const alice = keyring.addFromUri('//Alice')
 
-  const apiPromise = await ApiPromise.create(options({ provider: new WsProvider('wss://poc6.phala.network/ws'), noInitWarn: true }))
+  const endpoint = process.env.RPC_ENDPOINT ?? 'ws://10.0.0.120:19944'
+  console.log('endpoint: ', endpoint)
+  const apiPromise = await ApiPromise.create(options({ provider: new WsProvider(endpoint), noInitWarn: true }))
   const phatRegistry = await OnChainRegistry.create(apiPromise)
 
   // Transfer test PHA, print the mnemonic, address, and balance for debugging
