@@ -70,7 +70,7 @@ async function main() {
   const encodedConstructor = blueprintPromise.abi.findConstructor('withCore').toU8a([coreJs, coreSettings, brickProfileAddress])
   const expectedStorageDeposit = phatRegistry.clusterInfo.depositPerByte.mul(new BN(encodedConstructor.length))
   console.log('calc storageDeposit: ', expectedStorageDeposit, expectedStorageDeposit.toString())
-  const depositForEstimate = new BN(expectedStorageDeposit.toNumber() * 1.2)
+  const depositForEstimate = new BN(expectedStorageDeposit.toNumber() * 1.05)
 
   const estimateResult = await blueprintPromise.query.withCore(cert.address, { cert, deposit: depositForEstimate }, coreJs, coreSettings, brickProfileAddress)
   console.log(inspect(estimateResult.toHuman(), false, null, true))
