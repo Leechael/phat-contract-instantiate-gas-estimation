@@ -33,7 +33,7 @@ async function main() {
   console.log('address: ', pair.address)
   //
   console.log('claim test pha and wait for block finalized...')
-  await signAndSend(apiPromise.tx.balances.transfer(pair.address, 1e12 * 31), alice)
+  await signAndSend(apiPromise.tx.balances.transfer(pair.address, 1e12 * 32), alice)
   // Wait for block finalized.
   await new Promise(resolve => setTimeout(resolve, 10_000))
   //
@@ -66,36 +66,39 @@ async function main() {
   const coreSettings = 'https://api.lens.dev'
   const brickProfileAddress = '3zcnkmF6XjEogm8vAyPiL2ykPZHpeVtcfDcwTWJ2teqdSvjq'
 
-  const estimateResult = await blueprintPromise.query.withCore(cert.address, { cert }, coreJs, coreSettings, brickProfileAddress)
+  // Expectation storage deposit
+  const encodedConstructor = blueprintPromise.abi.findConstructor('withCore').toU8a([coreJs, coreSettings, brickProfileAddress])
+  const expectedStorageDeposit = phatRegistry.clusterInfo.depositPerByte.mul(new BN(encodedConstructor.length))
+  console.log('calc storageDeposit: ', expectedStorageDeposit, expectedStorageDeposit.toString())
+  const depositForEstimate = new BN(expectedStorageDeposit.toNumber() * 1.2)
+
+  const estimateResult = await blueprintPromise.query.withCore(cert.address, { cert, deposit: depositForEstimate }, coreJs, coreSettings, brickProfileAddress)
   console.log(inspect(estimateResult.toHuman(), false, null, true))
 
   const { gasRequired, storageDeposit } = estimateResult
 
-  console.log('gasRequired: ', gasRequired.refTime.toBn().toString())
-  console.log('storageDeposit: ', storageDeposit.isCharge ? storageDeposit.asCharge.toBn().toString() : '')
+  console.log('gasRequired: ', gasRequired.refTime.toBn().toString(), gasRequired.refTime.toNumber() / 1e12)
+  console.log('storageDeposit: ', storageDeposit.isCharge ? storageDeposit.asCharge.toBn().toString() : '', storageDeposit.isCharge ? storageDeposit.asCharge.toBn().toNumber() / 1e12 : '')
 
-  // Expectation storage deposit
-  const encodedConstructor = blueprintPromise.abi.findConstructor('withCore').toU8a([coreJs, coreSettings, brickProfileAddress])
-  const expectedStorageDeposit = phatRegistry.clusterInfo.depositPerByte.mul(new BN(encodedConstructor.length))
-  console.log('calc storageDeposit: ', expectedStorageDeposit.toString())
+  let value = (new BN(0)).add(gasRequired.refTime.toBn()).add(storageDeposit.isCharge ? storageDeposit.asCharge.toBn() : new BN(0))
+  value = new BN(value.toNumber() * 1.05)
 
   // instantiate with the estimate result from PRuntime
   try {
-    const value = (new BN(0)).add(gasRequired.refTime.toBn()).add(storageDeposit.isCharge ? storageDeposit.asCharge.toBn() : new BN(0))
     const txConf = {
       gasLimit: gasRequired.refTime,
       // FIXME: set storage deposit with estimate result will fail with `StorageDepositLimitExhausted`
       storageDepositLimit: storageDeposit.isCharge ? storageDeposit.asCharge : null,
     }
     if (autoDeposit) {
-      console.log('auto deposit value: ', value.toString())
-      txConf.value = value
+      console.log('auto deposit value: ', value.toString(), value.toNumber() / 1e12)
+      txConf.deposit = value
     }
     const result = await signAndSend(blueprintPromise.tx.withCore(txConf, coreJs, coreSettings, brickProfileAddress), pair)
     await result.waitFinalized(10_000) // 10 secs
     console.log('the contract id:', result.contractId.toString())
   } catch (error) {
-    console.log('tx error: ', error)
+    console.log('tx error: ', error.toHuman ? error.toHuman() : error)
   }
 
   // Get the lastest balance.
@@ -104,7 +107,11 @@ async function main() {
     console.log('on chain balance: ', onChainBalance.data.free.toBn().toString())
     const clusterBalance = await phatRegistry.getClusterBalance(pair.address)
     console.log('cluster balance: ', clusterBalance.free.toString())
-    console.log('cost', before.sub(clusterBalance.free).toString())
+    if (autoDeposit) {
+      console.log('cost', value.sub(clusterBalance.free).toString(), value.sub(clusterBalance.free).toNumber() / 1e12)
+    } else {
+      console.log('cost', before.sub(clusterBalance.free).toString(), before.sub(clusterBalance.free).toNumber() / 1e12)
+    }
   }
 }
 
