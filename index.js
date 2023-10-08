@@ -43,6 +43,7 @@ async function main() {
   console.log('storageDeposit: ', storageDeposit.isCharge ? storageDeposit.asCharge.toBn().toString() : '')
 
   // Expectation storage deposit:
+  const encodedConstructor = blueprintPromise.abi.findConstructor('withCore').toU8a([coreJs, coreSettings, brickProfileAddress])
   const expectedStorageDeposit = phatRegistry.clusterInfo.depositPerByte.mul(new BN(encodedConstructor.length * 2.2))
   console.log('expected storageDeposit: ', expectedStorageDeposit.toString())
 }
