@@ -1,8 +1,9 @@
 const fs = require('fs')
 const { inspect } = require('util')
-const { OnChainRegistry, signCertificate, options, PinkBlueprintPromise } = require('@phala/sdk')
+const { OnChainRegistry, signCertificate, signAndSend, options, PinkBlueprintPromise } = require('@phala/sdk')
 const { ApiPromise, Keyring, WsProvider } = require('@polkadot/api')
 const { waitReady } = require('@polkadot/wasm-crypto')
+const { mnemonicGenerate } = require('@polkadot/util-crypto')
 const { BN } = require('@polkadot/util')
 
 
@@ -12,16 +13,47 @@ const { BN } = require('@polkadot/util')
 async function main() {
   const codeHash = '0x96ca5480eb52b8087b1e64cae52c75e6db037e1920320653584ef920db5d29d5'
 
+  // runtime flags
+  const depositToCluster = process.argv.find(i => i === '--deposit-to-cluster')
+  const autoDeposit = process.argv.find(i => i === '--auto-deposit')
+
   await waitReady()
   const keyring = new Keyring({ type: 'sr25519' })
-  const pair = keyring.addFromUri('//Alice')
+  // Ensure generated new account each time.
+  const mnemonic = mnemonicGenerate(12)
+  const pair = keyring.addFromUri(mnemonic)
   const cert = await signCertificate({ pair })
+  const alice = keyring.addFromUri('//Alice')
 
   const apiPromise = await ApiPromise.create(options({ provider: new WsProvider('wss://poc6.phala.network/ws'), noInitWarn: true }))
   const phatRegistry = await OnChainRegistry.create(apiPromise)
 
+  // Transfer test PHA, print the mnemonic, address, and balance for debugging
+  console.log('mnemonic: ', mnemonic)
+  console.log('address: ', pair.address)
+  //
+  console.log('claim test pha and wait for block finalized...')
+  await signAndSend(apiPromise.tx.balances.transfer(pair.address, 1e12 * 31), alice)
+  // Wait for block finalized.
+  await new Promise(resolve => setTimeout(resolve, 10_000))
+  //
+  if (depositToCluster) {
+    console.log('trasnfer to cluster and wait for block finalized...')
+    await signAndSend(phatRegistry.transferToCluster(pair.address, 1e12 * 30), pair)
+    await new Promise(resolve => setTimeout(resolve, 10_000))
+  }
+  //
+  let before
+  {
+    const onChainBalance = await apiPromise.query.system.account(pair.address)
+    console.log('on chain balance: ', onChainBalance.data.free.toBn().toString())
+    const clusterBalance = await phatRegistry.getClusterBalance(pair.address)
+    console.log('cluster balance: ', clusterBalance.free.toString())
+    before = clusterBalance.free
+  }
+
   // Check the code has been uploaded to the cluster or not. If not, upload it.
-  const codeExistsQuery = await phatRegistry.systemContract.query['system::codeExists'](cert.address, { cert }, codeHash, 'Ink')
+  const codeExistsQuery = await phatRegistry.systemContract.query['system::codeExists'](pair.address, { cert }, codeHash, 'Ink')
   if (codeExistsQuery.output.asOk.isFalse) {
     // TODO upload code with PinkCodePromise
   }
@@ -42,10 +74,38 @@ async function main() {
   console.log('gasRequired: ', gasRequired.refTime.toBn().toString())
   console.log('storageDeposit: ', storageDeposit.isCharge ? storageDeposit.asCharge.toBn().toString() : '')
 
-  // Expectation storage deposit:
+  // Expectation storage deposit
   const encodedConstructor = blueprintPromise.abi.findConstructor('withCore').toU8a([coreJs, coreSettings, brickProfileAddress])
-  const expectedStorageDeposit = phatRegistry.clusterInfo.depositPerByte.mul(new BN(encodedConstructor.length * 2.2))
-  console.log('expected storageDeposit: ', expectedStorageDeposit.toString())
+  const expectedStorageDeposit = phatRegistry.clusterInfo.depositPerByte.mul(new BN(encodedConstructor.length))
+  console.log('calc storageDeposit: ', expectedStorageDeposit.toString())
+
+  // instantiate with the estimate result from PRuntime
+  try {
+    const value = (new BN(0)).add(gasRequired.refTime.toBn()).add(storageDeposit.isCharge ? storageDeposit.asCharge.toBn() : new BN(0))
+    const txConf = {
+      gasLimit: gasRequired.refTime,
+      // FIXME: set storage deposit with estimate result will fail with `StorageDepositLimitExhausted`
+      storageDepositLimit: storageDeposit.isCharge ? storageDeposit.asCharge : null,
+    }
+    if (autoDeposit) {
+      console.log('auto deposit value: ', value.toString())
+      txConf.value = value
+    }
+    const result = await signAndSend(blueprintPromise.tx.withCore(txConf, coreJs, coreSettings, brickProfileAddress), pair)
+    await result.waitFinalized(10_000) // 10 secs
+    console.log('the contract id:', result.contractId.toString())
+  } catch (error) {
+    console.log('tx error: ', error)
+  }
+
+  // Get the lastest balance.
+  {
+    const onChainBalance = await apiPromise.query.system.account(pair.address)
+    console.log('on chain balance: ', onChainBalance.data.free.toBn().toString())
+    const clusterBalance = await phatRegistry.getClusterBalance(pair.address)
+    console.log('cluster balance: ', clusterBalance.free.toString())
+    console.log('cost', before.sub(clusterBalance.free).toString())
+  }
 }
 
 main().catch(console.error).finally(() => process.exit())
